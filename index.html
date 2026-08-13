@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Auto S/R Channels + Kalman Flow — Proyecto 2</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #131722;
+      color: #d1d4dc;
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Barra superior GLOBAL (fecha compartida + split + servidor) ── */
+    #global-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 16px;
+      background: #12151c;
+      border-bottom: 1px solid #2a2e39;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      font-size: 12px;
+    }
+    #global-bar label { color: #848e9c; }
+    #fecha-global {
+      background: #2a2e39;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #d1d4dc;
+      font-size: 13px;
+      padding: 5px 9px;
+      outline: none;
+    }
+    #fecha-global:focus { border-color: #2962ff; }
+
+    #btn-split {
+      background: transparent;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #d1d4dc;
+      font-size: 12px;
+      padding: 5px 12px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    #btn-split:hover { border-color: #2962ff; color: #2962ff; }
+
+    #server-status {
+      margin-left: auto;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: #848e9c;
+    }
+    #server-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #363c4e;
+    }
+    #server-dot.online  { background: #26a69a; }
+    #server-dot.offline { background: #ef5350; }
+
+    /* ── Fila de paneles ─────────────────────────────── */
+    #panels-row {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+    .panel {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .panel + .panel {
+      border-left: 1px solid #2a2e39;
+    }
+
+    /* ── Barra de controles de cada panel ─────────────── */
+    .panel-topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      background: #1e222d;
+      border-bottom: 1px solid #2a2e39;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .panel-topbar label { font-size: 12px; color: #848e9c; }
+
+    .symbol-input, .timeframe-select {
+      background: #2a2e39;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #d1d4dc;
+      font-size: 13px;
+      padding: 6px 9px;
+      outline: none;
+      cursor: pointer;
+    }
+    .symbol-input { cursor: text; text-transform: uppercase; width: 118px; padding-right: 24px; }
+    /* Oculta la flechita nativa que Edge/Chrome le agregan a los inputs
+       con "list" (datalist) — se solapaba con nuestro botón "✕" y tapaba
+       la última letra de la divisa escrita. */
+    .symbol-input::-webkit-list-button,
+    .symbol-input::-webkit-calendar-picker-indicator {
+      display: none !important;
+    }
+
+    .symbol-input-wrap { position: relative; display: inline-flex; align-items: center; }
+    .btn-clear-symbol {
+      position: absolute;
+      right: 5px;
+      background: none;
+      border: none;
+      color: #565a68;
+      font-size: 12px;
+      line-height: 1;
+      padding: 2px;
+      cursor: pointer;
+      display: none;   /* solo aparece cuando el input tiene texto */
+    }
+    .btn-clear-symbol:hover { color: #ef5350; }
+    .symbol-input:focus, .timeframe-select:focus { border-color: #2962ff; }
+
+    .btn-cargar {
+      background: #2962ff;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    .btn-cargar:hover  { background: #1a48cc; }
+    .btn-cargar:active { background: #1035a0; }
+
+    .info-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+    }
+    .info-symbol { font-size: 14px; font-weight: 700; color: #fff; }
+    .info-fecha  { color: #848e9c; }
+
+    .btn-cargar-mas {
+      background: transparent;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #848e9c;
+      font-size: 11px;
+      padding: 3px 9px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .btn-cargar-mas:hover:not(:disabled) { border-color: #2962ff; color: #2962ff; }
+    .btn-cargar-mas:disabled { opacity: .5; cursor: default; }
+
+    .estado { font-size: 12px; }
+    .estado-ok      { color: #26a69a; }
+    .estado-error   { color: #ef5350; }
+    .estado-cargando{ color: #f7931a; }
+
+    .spinner {
+      display: none;
+      width: 14px; height: 14px;
+      border: 2px solid #363c4e;
+      border-top-color: #2962ff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Barra de señal ──────────────────────────────── */
+    .signal-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 5px 14px;
+      background: #171b26;
+      border-bottom: 1px solid #2a2e39;
+      font-size: 11px;
+      color: #848e9c;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    .signal-bar .chip {
+      padding: 2px 9px;
+      border-radius: 10px;
+      background: #2a2e39;
+      color: #d1d4dc;
+      font-weight: 600;
+    }
+    .chip-buy  { background: rgba(38,166,154,.18); color: #26a69a; }
+    .chip-sell { background: rgba(239,83,80,.18);  color: #ef5350; }
+    .chip-wait { background: #2a2e39; color: #848e9c; }
+
+    .channel-toggles {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+      padding-left: 12px;
+      border-left: 1px solid #2a2e39;
+    }
+    .channel-toggles label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      user-select: none;
+      color: #d1d4dc;
+      font-size: 11px;
+    }
+    .channel-toggles input[type="checkbox"] {
+      accent-color: #2962ff;
+      cursor: pointer;
+      width: 12px; height: 12px;
+    }
+
+    /* ── Leyenda de canales (reemplaza las tarjetas flotantes que antes
+       aparecían pegadas al final de cada línea, adentro del gráfico) ── */
+    .sig-text-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .channel-legend {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-left: 12px;
+      border-left: 1px solid #2a2e39;
+    }
+    .channel-legend .leg-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: #d1d4dc;
+      white-space: nowrap;
+    }
+    .channel-legend .leg-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── Botón para colapsar/expandir la info (señal/kalman/canales/fechas) ── */
+    .btn-toggle-info {
+      background: transparent;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #848e9c;
+      font-size: 13px;
+      padding: 5px 9px;
+      cursor: pointer;
+      margin-left: auto;
+      line-height: 1;
+      transition: all .15s;
+    }
+    .btn-toggle-info:hover { border-color: #2962ff; color: #2962ff; }
+
+    /* ── Contenedores gráfico ─────────────────────────── */
+    .charts-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .chart-container {
+      flex: 1;
+      position: relative;
+      background: #131722;
+      min-height: 0;
+    }
+    .overlay-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .smf-container {
+      height: 120px;
+      position: relative;
+      background: #131722;
+      border-top: 1px solid #2a2e39;
+      display: none;
+      flex-shrink: 0;
+    }
+
+    .empty-screen {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: #363c4e;
+      font-size: 13px;
+      text-align: center;
+      padding: 0 20px;
+      pointer-events: none;
+    }
+    .empty-screen svg { opacity: .25; }
+  </style>
+</head>
+<body>
+
+<div id="global-bar">
+  <label for="fecha-global">📅 Fecha (compartida entre pantallas):</label>
+  <input id="fecha-global" type="date" />
+  <button id="btn-split">⊞ 2 pantallas</button>
+  <div id="server-status">
+    <div id="server-dot"></div>
+    <span id="server-label">Verificando servidor…</span>
+  </div>
+</div>
+
+<div id="panels-row">
+  <div class="panel" id="panel-1"></div>
+  <div class="panel" id="panel-2" style="display:none"></div>
+</div>
+
+<template id="panel-template">
+  <div class="panel-topbar">
+    <label>Divisa:</label>
+    <span class="symbol-input-wrap">
+      <input class="symbol-input" list="" type="text" placeholder="EURUSD" maxlength="20" autocomplete="off" />
+      <button type="button" class="btn-clear-symbol" tabindex="-1" title="Borrar">✕</button>
+    </span>
+    <datalist class="symbol-list">
+      <option value="EURUSD"></option>
+      <option value="GBPUSD"></option>
+      <option value="USDJPY"></option>
+      <option value="USDCHF"></option>
+      <option value="USDCAD"></option>
+      <option value="AUDUSD"></option>
+      <option value="NZDUSD"></option>
+      <option value="EURGBP"></option>
+      <option value="EURJPY"></option>
+      <option value="EURCHF"></option>
+      <option value="EURAUD"></option>
+      <option value="EURCAD"></option>
+      <option value="GBPJPY"></option>
+      <option value="GBPCHF"></option>
+      <option value="GBPAUD"></option>
+      <option value="AUDJPY"></option>
+      <option value="AUDCAD"></option>
+      <option value="AUDNZD"></option>
+      <option value="CADJPY"></option>
+      <option value="CHFJPY"></option>
+      <option value="NZDJPY"></option>
+      <option value="XAUUSD"></option>
+      <option value="XAGUSD"></option>
+      <option value="US30"></option>
+      <option value="US500"></option>
+      <option value="NAS100"></option>
+      <option value="GER40"></option>
+      <option value="UK100"></option>
+      <option value="BTCUSD"></option>
+      <option value="ETHUSD"></option>
+    </datalist>
+
+    <label>Timeframe:</label>
+    <select class="timeframe-select">
+      <option value="M15">M15</option>
+      <option value="M30">M30</option>
+      <option value="H1">H1</option>
+      <option value="H2">H2</option>
+      <option value="H3">H3</option>
+      <option value="H4" selected>H4</option>
+      <option value="H6">H6</option>
+      <option value="H8">H8</option>
+      <option value="H12">H12</option>
+      <option value="D1">D1</option>
+      <option value="W1">W1</option>
+      <option value="MN1">MN1</option>
+    </select>
+
+    <button class="btn-cargar">▶ Cargar</button>
+    <div class="spinner"></div>
+
+    <div class="info-bar">
+      <span class="info-symbol"></span>
+      <span class="info-fecha"></span>
+      <button class="btn-cargar-mas" style="display:none">← Cargar más historial</button>
+      <span class="estado"></span>
+    </div>
+
+    <button class="btn-toggle-info" title="Mostrar/ocultar información">☰</button>
+  </div>
+
+  <div class="signal-bar">
+    <div class="sig-text-group">
+      <span class="sig-signal chip chip-wait">Señal: —</span>
+      <span class="sig-kalman">Kalman: —</span>
+      <span class="sig-canales">Canales: —</span>
+    </div>
+
+    <div class="channel-toggles">
+      <label class="lbl-largo"><input type="checkbox" class="chk-largo" checked> Largo</label>
+      <label class="lbl-mediano"><input type="checkbox" class="chk-mediano" checked> Mediano</label>
+      <label class="lbl-corto"><input type="checkbox" class="chk-corto" checked> Corto</label>
+      <label><input type="checkbox" class="chk-relleno"> Relleno</label>
+    </div>
+
+    <div class="channel-legend"></div>
+  </div>
+
+  <div class="charts-container">
+    <div class="chart-container">
+      <canvas class="overlay-canvas"></canvas>
+      <div class="empty-screen">
+        <svg width="56" height="56" viewBox="0 0 64 64" fill="none">
+          <rect x="4"  y="16" width="8"  height="32" rx="2" fill="#d1d4dc"/>
+          <rect x="20" y="24" width="8"  height="20" rx="2" fill="#d1d4dc"/>
+          <rect x="36" y="8"  width="8"  height="40" rx="2" fill="#d1d4dc"/>
+          <rect x="52" y="20" width="8"  height="28" rx="2" fill="#d1d4dc"/>
+        </svg>
+        <span>Presiona <strong style="color:#2962ff">▶ Cargar</strong> para analizar</span>
+      </div>
+    </div>
+    <div class="smf-container"></div>
+  </div>
+</template>
+
+<script>
+const API = "http://localhost:5051";
+
+// ══════════════════════════════════════════════════════════
+// Fábrica de paneles: cada pantalla (1 o 2) es una instancia
+// independiente con su propio chart, símbolo, timeframe, canales,
+// checkboxes, etc. — pero TODAS comparten la misma fecha (arriba).
+// ══════════════════════════════════════════════════════════
+function crearPanel(rootEl, opciones = {}) {
+  const tpl = document.getElementById("panel-template").content.cloneNode(true);
+  rootEl.appendChild(tpl);
+
+  const $ = sel => rootEl.querySelector(sel);
+
+  const symbolInput      = $(".symbol-input");
+  const btnClearSymbol   = $(".btn-clear-symbol");
+  const symbolList       = $(".symbol-list");
+  const timeframeSelect  = $(".timeframe-select");
+  const btnCargar        = $(".btn-cargar");
+  const spinner          = $(".spinner");
+  const infoSymbol       = $(".info-symbol");
+  const infoFecha        = $(".info-fecha");
+  const btnCargarMas     = $(".btn-cargar-mas");
+  const estadoEl         = $(".estado");
+  const sigSignal        = $(".sig-signal");
+  const sigKalman        = $(".sig-kalman");
+  const sigCanales       = $(".sig-canales");
+  const lblLargo         = $(".lbl-largo");
+  const lblMediano       = $(".lbl-mediano");
+  const lblCorto         = $(".lbl-corto");
+  const chkLargo         = $(".chk-largo");
+  const chkMediano       = $(".chk-mediano");
+  const chkCorto         = $(".chk-corto");
+  const chkRelleno       = $(".chk-relleno");
+  const chartContainer   = $(".chart-container");
+  const emptyScreen      = $(".empty-screen");
+  const overlayCanvas    = $(".overlay-canvas");
+  const smfContainer     = $(".smf-container");
+  const channelLegend    = $(".channel-legend");
+  const btnToggleInfo    = $(".btn-toggle-info");
+  const infoBar          = $(".info-bar");
+  const sigTextGroup     = $(".sig-text-group");
+
+  // Datalist necesita un id único por panel para poder referenciarlo con "list="
+  const listId = "symbol-list-" + Math.random().toString(36).slice(2);
+  symbolList.id = listId;
+  symbolInput.setAttribute("list", listId);
+
+  // ── Estado propio de este panel ──
+  let chart, candleSerie, overlayCtx;
+  let smfChart = null, smfHist = null, smfLine = null;
+  let overlaySeries = [];      // líneas del Kalman
+  let channelSeriesList = [];  // líneas de canal (base/par/mid)
+  let currentChannels = [];
+  let lastRealTime = null;
+  let loadedCandles = [];
+  let symbolActual = null, timeframeActual = null;
+  let cargandoDatos = false, cargandoMas = false;
+  let filtroCanales = { largo: true, mediano: true, corto: true };
+  let mostrarRelleno = false;
+
+  // Botón "✕" para borrar el contenido del campo. Va acá arriba (nivel de
+  // crearPanel, no adentro de init()) porque cualquier lugar que toque
+  // symbolInput.value "por código" (no tipeando) tiene que llamarla a
+  // mano — el navegador NO dispara el evento "input" cuando el valor se
+  // asigna desde JS, solo cuando el usuario escribe. setSymbol() (usado
+  // desde afuera, en toggleSplit) también la necesita.
+  function actualizarBtnClear() {
+    btnClearSymbol.style.display = symbolInput.value ? "block" : "none";
+  }
+
+  function grupoDeCanal(label) {
+    const l = (label || "").toLowerCase();
+    if (l.includes("largo")) return "largo";
+    if (l.includes("mediano")) return "mediano";
+    if (l.includes("corto")) return "corto";
+    return "otro";
+  }
+
+  function hexToRgba(hex, alpha) {
+    const h = hex.replace("#", "");
+    const r = parseInt(h.substring(0, 2), 16);
+    const g = parseInt(h.substring(2, 4), 16);
+    const b = parseInt(h.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function setEstado(msg, tipo) {
+    estadoEl.textContent = msg;
+    estadoEl.className = "estado estado-" + tipo;
+  }
+
+  function resizeOverlayCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    overlayCanvas.style.width  = chartContainer.clientWidth + "px";
+    overlayCanvas.style.height = chartContainer.clientHeight + "px";
+    overlayCanvas.width  = Math.round(chartContainer.clientWidth * dpr);
+    overlayCanvas.height = Math.round(chartContainer.clientHeight * dpr);
+    overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function actualizarTogglesDisponibles() {
+    const gruposPresentes = new Set(currentChannels.map(ch => grupoDeCanal(ch.label)));
+    lblLargo.style.display   = gruposPresentes.has("largo")   ? "flex" : "none";
+    lblMediano.style.display = gruposPresentes.has("mediano") ? "flex" : "none";
+    lblCorto.style.display   = gruposPresentes.has("corto")   ? "flex" : "none";
+  }
+
+  // Reemplaza las tarjetas flotantes que antes aparecían pegadas al final
+  // de cada línea DENTRO del gráfico (estorbando el análisis) — ahora es
+  // una leyenda chiquita arriba, al lado de los checkboxes. Solo lista
+  // los canales que están efectivamente visibles (respeta filtroCanales).
+  function actualizarLeyenda() {
+    channelLegend.innerHTML = "";
+    currentChannels
+      .filter(ch => filtroCanales[grupoDeCanal(ch.label)])
+      .forEach(ch => {
+        const item = document.createElement("span");
+        item.className = "leg-item";
+        item.innerHTML =
+          `<span class="leg-dot" style="background:${ch.color}"></span>${ch.label} (${Math.round(ch.quality * 100)}%)`;
+        channelLegend.appendChild(item);
+      });
+  }
+
+  const toSeriesData = pts => pts.map(p => ({ time: p.t, value: p.y }));
+
+  function dibujarCanales() {
+    channelSeriesList.forEach(s => chart.removeSeries(s));
+    channelSeriesList = [];
+
+    currentChannels.forEach(ch => {
+      if (!filtroCanales[grupoDeCanal(ch.label)]) return;
+
+      const lw = Math.max(1, Math.min(4, Math.round(ch.linewidth || 2)));
+
+      // Sin "title": eso es lo que hace que lightweight-charts dibuje la
+      // tarjeta flotante pegada al final de la línea, adentro del gráfico
+      // (estorbando el análisis). El nombre + calidad de cada canal ahora
+      // se muestra aparte, en la leyenda de arriba (actualizarLeyenda()).
+      const base = chart.addLineSeries({
+        color: ch.color, lineWidth: lw, priceLineVisible:false, lastValueVisible:false, title:"",
+      });
+      base.setData(toSeriesData(ch.base_points));
+      channelSeriesList.push(base);
+
+      const par = chart.addLineSeries({
+        color: ch.color, lineWidth: lw, priceLineVisible:false, lastValueVisible:false, title:"",
+      });
+      par.setData(toSeriesData(ch.par_points));
+      channelSeriesList.push(par);
+
+      const mid = chart.addLineSeries({
+        color: hexToRgba(ch.color, 0.8), lineWidth: 1, lineStyle: 2,
+        priceLineVisible:false, lastValueVisible:false, title:"",
+      });
+      mid.setData(toSeriesData(ch.mid_points));
+      channelSeriesList.push(mid);
+    });
+
+    actualizarLeyenda();
+    requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
+  }
+
+  function redrawOverlay() {
+    if (!overlayCtx) return;
+    const w = overlayCanvas.clientWidth, h = overlayCanvas.clientHeight;
+    overlayCtx.clearRect(0, 0, w, h);
+
+    currentChannels
+      .filter(ch => filtroCanales[grupoDeCanal(ch.label)])
+      .forEach(ch => {
+        const baseCoords = ch.base_points
+          .map(p => [chart.timeScale().timeToCoordinate(p.t), candleSerie.priceToCoordinate(p.y)])
+          .filter(([x, y]) => x !== null && y !== null);
+        const parCoords = ch.par_points
+          .map(p => [chart.timeScale().timeToCoordinate(p.t), candleSerie.priceToCoordinate(p.y)])
+          .filter(([x, y]) => x !== null && y !== null);
+
+        if (mostrarRelleno && baseCoords.length >= 2 && parCoords.length >= 2) {
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(baseCoords[0][0], baseCoords[0][1]);
+          for (let i = 1; i < baseCoords.length; i++) overlayCtx.lineTo(baseCoords[i][0], baseCoords[i][1]);
+          for (let i = parCoords.length - 1; i >= 0; i--) overlayCtx.lineTo(parCoords[i][0], parCoords[i][1]);
+          overlayCtx.closePath();
+          overlayCtx.fillStyle = hexToRgba(ch.color, 0.12);
+          overlayCtx.fill();
+        }
+
+        [ch.pivot1, ch.pivot2].forEach(p => {
+          if (!p) return;
+          const px = chart.timeScale().timeToCoordinate(p.t);
+          const py = candleSerie.priceToCoordinate(p.y);
+          if (px === null || py === null) return;
+
+          overlayCtx.beginPath();
+          overlayCtx.arc(px, py, 6, 0, Math.PI * 2);
+          overlayCtx.fillStyle = "rgba(255,255,255,0.95)";
+          overlayCtx.fill();
+
+          overlayCtx.beginPath();
+          overlayCtx.arc(px, py, 4.5, 0, Math.PI * 2);
+          overlayCtx.fillStyle = ch.color;
+          overlayCtx.fill();
+          overlayCtx.lineWidth = 1.5;
+          overlayCtx.strokeStyle = "#131722";
+          overlayCtx.stroke();
+        });
+      });
+
+    if (lastRealTime !== null) {
+      const xNow = chart.timeScale().timeToCoordinate(lastRealTime);
+      if (xNow !== null) {
+        overlayCtx.save();
+        overlayCtx.setLineDash([2, 3]);
+        overlayCtx.strokeStyle = "rgba(120, 123, 134, 0.6)";
+        overlayCtx.lineWidth = 1;
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(xNow, 0);
+        overlayCtx.lineTo(xNow, h);
+        overlayCtx.stroke();
+        overlayCtx.restore();
+      }
+    }
+  }
+
+  function renderizarSenales(sig, channels) {
+    const label = sig.confirmed_signal || sig.signal || "Wait";
+    sigSignal.textContent = `Señal: ${label}`;
+    sigSignal.className = "chip " + (label.startsWith("Buy") ? "chip-buy" : label.startsWith("Sell") ? "chip-sell" : "chip-wait");
+
+    const extra = sig.breakout ? ` · ${sig.breakout}` : (sig.react ? ` · ${sig.react}` : "");
+    if (extra) sigSignal.textContent += extra;
+
+    sigKalman.textContent = sig.kalman_trend ? `Kalman: ${sig.kalman_trend}${sig.kalman_flip ? " · " + sig.kalman_flip : ""}` : "";
+
+    sigCanales.textContent = "Canales: " + (channels.length
+      ? channels.map(c => `${c.label} ${Math.round(c.quality*100)}%`).join(" | ")
+      : "—");
+  }
+
+  function renderizarSMF(smf) {
+    if (!smf) {
+      smfContainer.style.display = "none";
+      return;
+    }
+    smfContainer.style.display = "block";
+
+    if (!smfChart) {
+      smfChart = LightweightCharts.createChart(smfContainer, {
+        width: smfContainer.clientWidth, height: smfContainer.clientHeight,
+        layout: { background:{ type:"solid", color:"#131722" }, textColor:"#d1d4dc" },
+        grid: { vertLines:{color:"#1e222d"}, horzLines:{color:"#1e222d"} },
+        rightPriceScale: { borderColor:"#2a2e39" },
+        timeScale: { borderColor:"#2a2e39", timeVisible:true, secondsVisible:false, visible:false },
+      });
+      smfHist = smfChart.addHistogramSeries({ priceLineVisible:false, lastValueVisible:false });
+      smfLine = smfChart.addLineSeries({ color:"#ffffff", lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+
+      chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+        if (range) smfChart.timeScale().setVisibleLogicalRange(range);
+      });
+    } else {
+      smfChart.applyOptions({ width: smfContainer.clientWidth, height: smfContainer.clientHeight });
+    }
+
+    smfHist.setData(smf.bars);
+    smfLine.setData(smf.smoothed);
+    smfChart.timeScale().fitContent();
+  }
+
+  function renderizarTodo(data) {
+    emptyScreen.style.display = "none";
+
+    overlaySeries.forEach(s => chart.removeSeries(s));
+    overlaySeries = [];
+
+    if (!data.candles || data.candles.length === 0) {
+      console.error("El servidor respondió sin velas para mostrar:", data);
+      candleSerie.setData([]);
+      setEstado("❌ Sin velas (F12 consola)", "error");
+      return;
+    }
+
+    candleSerie.setData(data.candles);
+
+    currentChannels = data.channels || [];
+    actualizarTogglesDisponibles();
+    lastRealTime = data.candles.length ? data.candles[data.candles.length - 1].time : null;
+    loadedCandles = data.candles.slice();
+    btnCargarMas.style.display = "inline-block";
+    btnCargarMas.disabled = false;
+    btnCargarMas.textContent = "← Cargar más historial";
+
+    infoSymbol.textContent = data.symbol;
+    infoFecha.textContent =
+      `· ${data.timeframe} · ${data.first_date} → ${data.last_date} · ${data.n_candles_total} velas (${data.source})`;
+
+    dibujarCanales();
+
+    const markers = [];
+    if (data.kalman) {
+      data.kalman.segments.forEach(seg => {
+        const s = chart.addLineSeries({
+          color: seg.color, lineWidth: 2, priceLineVisible:false, lastValueVisible:false, title:"",
+        });
+        s.setData(seg.points);
+        overlaySeries.push(s);
+      });
+      data.kalman.flips_up.forEach(p => markers.push({
+        time: p.time, position: "belowBar", color: "#30FDCF", shape: "arrowUp", text: "Long",
+      }));
+      data.kalman.flips_down.forEach(p => markers.push({
+        time: p.time, position: "aboveBar", color: "#E117B7", shape: "arrowDown", text: "Short",
+      }));
+    }
+
+    if (data.pivots && data.pivots.length) {
+      data.pivots.forEach(p => markers.push({
+        time: p.time,
+        position: p.type === "high" ? "aboveBar" : "belowBar",
+        color: p.type === "high" ? "#FF5252" : "#00E676",
+        shape: p.type === "high" ? "arrowDown" : "arrowUp",
+        text: "",
+      }));
+    }
+
+    markers.sort((a, b) => a.time - b.time);
+    candleSerie.setMarkers(markers);
+
+    chart.timeScale().fitContent();
+    requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
+
+    renderizarSMF(data.smf);
+    renderizarSenales(data.signals, data.channels);
+  }
+
+  async function cargarDatos() {
+    if (cargandoDatos) return;
+
+    const symbol    = symbolInput.value.trim().toUpperCase();
+    const timeframe = timeframeSelect.value;
+    const hasta     = document.getElementById("fecha-global").value;   // FECHA COMPARTIDA
+
+    if (!symbol) {
+      setEstado("❌ Ingresa una divisa", "error");
+      return;
+    }
+
+    cargandoDatos = true;
+    spinner.style.display = "block";
+    setEstado("Conectando a MT5…", "cargando");
+    btnCargar.disabled = true;
+
+    const params = new URLSearchParams({ symbol, timeframe });
+    if (hasta) params.set("hasta", hasta);
+
+    try {
+      const res = await fetch(`${API}/datos?${params.toString()}`, {
+        signal: AbortSignal.timeout(120000)
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setEstado(`❌ ${data.error}`, "error");
+        return;
+      }
+
+      renderizarTodo(data);
+      symbolActual = symbol;
+      timeframeActual = timeframe;
+      setEstado("✓ Cargado", "ok");
+
+    } catch (e) {
+      if (e.name === "TimeoutError") {
+        setEstado("❌ Tiempo de espera agotado", "error");
+      } else {
+        setEstado("❌ No se pudo conectar al servidor", "error");
+      }
+    } finally {
+      spinner.style.display = "none";
+      btnCargar.disabled = false;
+      cargandoDatos = false;
+    }
+  }
+
+  async function cargarMasHistorial() {
+    if (cargandoMas || !loadedCandles.length || !symbolActual) return;
+
+    cargandoMas = true;
+    btnCargarMas.disabled = true;
+    btnCargarMas.textContent = "Cargando…";
+
+    const rangoVisible = chart.timeScale().getVisibleRange();
+    const antesDe = loadedCandles[0].time;
+
+    const params = new URLSearchParams({
+      symbol: symbolActual, timeframe: timeframeActual,
+      antes_de: antesDe, cantidad: 500,
+    });
+
+    try {
+      const res = await fetch(`${API}/velas_extra?${params.toString()}`, {
+        signal: AbortSignal.timeout(60000),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setEstado(`❌ ${data.error}`, "error");
+        return;
+      }
+      if (!data.candles || data.candles.length === 0) {
+        btnCargarMas.textContent = "No hay más historial";
+        btnCargarMas.disabled = true;
+        return;
+      }
+
+      loadedCandles = [...data.candles, ...loadedCandles];
+      candleSerie.setData(loadedCandles);
+
+      if (rangoVisible) chart.timeScale().setVisibleRange(rangoVisible);
+      requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
+
+      btnCargarMas.textContent = "← Cargar más historial";
+      setEstado(`✓ +${data.candles.length} velas`, "ok");
+
+    } catch (e) {
+      setEstado("❌ No se pudo traer más historial", "error");
+    } finally {
+      cargandoMas = false;
+      btnCargarMas.disabled = false;
+    }
+  }
+
+  async function precargarDefaults() {
+    try {
+      const r = await fetch(`${API}/config`, { signal: AbortSignal.timeout(3000) });
+      const cfg = await r.json();
+      if (!symbolInput.value) symbolInput.value = (cfg.symbol || "EURUSD").toUpperCase();
+      if (cfg.timeframe && [...timeframeSelect.options].some(o => o.value === cfg.timeframe.toUpperCase())) {
+        timeframeSelect.value = cfg.timeframe.toUpperCase();
+      }
+    } catch {
+      symbolInput.value = "EURUSD";
+    }
+  }
+
+  // ── Inicialización del chart de este panel ──
+  function init() {
+    chart = LightweightCharts.createChart(chartContainer, {
+      width:  chartContainer.clientWidth,
+      height: chartContainer.clientHeight,
+      layout:  { background:{ type: "solid", color: "#131722" }, textColor:"#d1d4dc" },
+      grid:    { vertLines:{color:"#1e222d"}, horzLines:{color:"#1e222d"} },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor:"#2a2e39" },
+      timeScale: { borderColor:"#2a2e39", timeVisible:true, secondsVisible:false },
+    });
+
+    candleSerie = chart.addCandlestickSeries({
+      upColor:"#26a69a", downColor:"#ef5350",
+      borderVisible:false,
+      wickUpColor:"#26a69a", wickDownColor:"#ef5350",
+      priceLineColor: "#ffcc00",
+      priceLineWidth: 1,
+      priceLineStyle: 1,
+    });
+
+    overlayCtx = overlayCanvas.getContext("2d");
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(redrawOverlay);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(redrawOverlay);
+
+    // Cualquier cambio de tamaño del contenedor (ventana, split screen,
+    // que aparezca un botón, lo que sea) re-sincroniza el chart.
+    new ResizeObserver(() => {
+      chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+      resizeOverlayCanvas();
+      redrawOverlay();
+      if (smfChart) {
+        smfChart.applyOptions({ width: smfContainer.clientWidth, height: smfContainer.clientHeight });
+      }
+    }).observe(chartContainer);
+
+    btnCargar.addEventListener("click", cargarDatos);
+    btnCargarMas.addEventListener("click", cargarMasHistorial);
+
+    timeframeSelect.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos(); });
+    symbolInput.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos(); });
+
+    let saltarAutocompletadoUnaVez = false;
+
+    symbolInput.addEventListener("focus", () => {
+      symbolInput.dataset.prevValue = symbolInput.value;
+      if (saltarAutocompletadoUnaVez) {
+        // Foco disparado por el botón "✕": dejar vacío para que se abra
+        // la lista completa, sin pisarlo con el autocompletado.
+        saltarAutocompletadoUnaVez = false;
+      } else {
+        // En la Pantalla 2: autocompletar con la divisa que ya tenga puesta
+        // la Pantalla 1 (para copiarla rápido) — se puede sobreescribir
+        // escribiendo encima, queda seleccionado el texto para eso.
+        const otroSimbolo = opciones.getSymbolOtroPanel ? opciones.getSymbolOtroPanel() : "";
+        symbolInput.value = otroSimbolo || "";
+      }
+      symbolInput.select();
+      actualizarBtnClear();
+    });
+    symbolInput.addEventListener("blur", () => {
+      if (!symbolInput.value && symbolInput.dataset.prevValue) {
+        symbolInput.value = symbolInput.dataset.prevValue;
+      }
+      actualizarBtnClear();
+    });
+
+    symbolInput.addEventListener("input", actualizarBtnClear);
+    actualizarBtnClear();
+    btnClearSymbol.addEventListener("click", () => {
+      symbolInput.value = "";
+      symbolInput.dataset.prevValue = "";   // que blur no restaure el valor viejo
+      actualizarBtnClear();
+      // Enfocar de nuevo abre la lista desplegable completa del navegador
+      // (comportamiento nativo de un input con datalist vacío) — se salta
+      // el autocompletado de la Pantalla 2 con la bandera de arriba, para
+      // que quede realmente vacío y no se pise el borrado.
+      saltarAutocompletadoUnaVez = true;
+      symbolInput.focus();
+    });
+
+    chkLargo.addEventListener("change", e => { filtroCanales.largo = e.target.checked; dibujarCanales(); });
+    chkMediano.addEventListener("change", e => { filtroCanales.mediano = e.target.checked; dibujarCanales(); });
+    chkCorto.addEventListener("change", e => { filtroCanales.corto = e.target.checked; dibujarCanales(); });
+    chkRelleno.addEventListener("change", e => { mostrarRelleno = e.target.checked; redrawOverlay(); });
+
+    // Colapsar/expandir la info (señal/kalman/canales + fecha/estado del
+    // panel) para liberar espacio vertical del gráfico. Los checkboxes y
+    // la leyenda de colores NO se ocultan — quedan siempre visibles.
+    // Arranca COLAPSADA por defecto (más espacio para el gráfico de entrada).
+    let infoColapsada = true;
+    infoBar.style.display = "none";
+    sigTextGroup.style.display = "none";
+    btnToggleInfo.textContent = "▾";
+    btnToggleInfo.title = "Mostrar información";
+
+    btnToggleInfo.addEventListener("click", () => {
+      infoColapsada = !infoColapsada;
+      infoBar.style.display = infoColapsada ? "none" : "flex";
+      sigTextGroup.style.display = infoColapsada ? "none" : "flex";
+      btnToggleInfo.textContent = infoColapsada ? "▾" : "☰";
+      btnToggleInfo.title = infoColapsada ? "Mostrar información" : "Ocultar información";
+    });
+
+    resizeOverlayCanvas();
+    precargarDefaults();
+  }
+
+  function setSymbol(v) {
+    symbolInput.value = v;
+    actualizarBtnClear();
+  }
+
+  return { init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol };
+}
+
+// ══════════════════════════════════════════════════════════
+// Orquestación: fecha compartida, split screen, estado del servidor
+// ══════════════════════════════════════════════════════════
+let panel1, panel2;
+let panel2Inicializado = false;
+let modoSplit = false;
+
+window.addEventListener("load", () => {
+  document.getElementById("fecha-global").value = new Date().toISOString().slice(0, 10);
+
+  panel1 = crearPanel(document.getElementById("panel-1"));
+  panel1.init();
+
+  document.getElementById("btn-split").addEventListener("click", toggleSplit);
+
+  verificarServidor();
+  setInterval(verificarServidor, 5000);
+});
+
+function toggleSplit() {
+  modoSplit = !modoSplit;
+  const panel2El = document.getElementById("panel-2");
+  const btn = document.getElementById("btn-split");
+
+  if (modoSplit) {
+    panel2El.style.display = "flex";
+    btn.textContent = "⊟ 1 pantalla";
+    if (!panel2Inicializado) {
+      panel2 = crearPanel(panel2El, {
+        // Cada vez que se hace foco en el buscador de la Pantalla 2, se
+        // autocompleta con lo que tenga puesto la Pantalla 1 en ese momento.
+        getSymbolOtroPanel: () => panel1.symbolInput.value.trim().toUpperCase(),
+      });
+      panel2.init();
+      panel2Inicializado = true;
+
+      // Precompletar la divisa de la Pantalla 2 con la que ya esté puesta
+      // en la Pantalla 1 (para ahorrar tiempo) — pero se puede cambiar
+      // libremente después, esto solo pasa la primera vez que se crea.
+      const simboloPanel1 = panel1.symbolInput.value.trim();
+      if (simboloPanel1) {
+        panel2.setSymbol(simboloPanel1);
+      }
+    }
+  } else {
+    panel2El.style.display = "none";
+    btn.textContent = "⊞ 2 pantallas";
+  }
+  // El ResizeObserver de cada panel se encarga de re-sincronizar el
+  // tamaño del chart automáticamente al cambiar el layout.
+}
+
+// ── Verificar si el servidor corre (compartido, un solo backend) ──
+async function verificarServidor() {
+  const dot   = document.getElementById("server-dot");
+  const label = document.getElementById("server-label");
+  try {
+    const r = await fetch(`${API}/ping`, { signal: AbortSignal.timeout(4000) });
+    if (r.ok) {
+      dot.className = "online";
+      label.textContent = "Servidor online ✓";
+    } else throw new Error();
+  } catch {
+    dot.className = "offline";
+    label.textContent = "Servidor offline — ejecuta arrancar.bat";
+  }
+}
+</script>
+</body>
+</html>
