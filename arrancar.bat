@@ -1,9 +1,9 @@
 @echo off
-title Auto S/R Channels + Kalman Flow - Servidor
+title Channel Breakout - Servidor
 color 0B
 
 echo ============================================
-echo   AUTO CHANNELS + KALMAN - Iniciando...
+echo   CHANNEL BREAKOUT - Iniciando servidor...
 echo ============================================
 echo.
 
@@ -32,8 +32,6 @@ call venv\Scripts\activate.bat
 echo.
 
 :: ── 3. Instalar dependencias si faltan ──────────────────────────
-:: (matplotlib hace falta porque auto_channels.py lo importa a nivel de
-::  modulo, aunque este servidor no genera imagenes .png)
 echo Verificando dependencias...
 pip show flask        >nul 2>&1 || pip install flask        -q
 pip show flask-cors   >nul 2>&1 || pip install flask-cors   -q
@@ -44,26 +42,28 @@ pip show MetaTrader5  >nul 2>&1 || pip install MetaTrader5  -q
 echo Dependencias OK
 echo.
 
-:: ── 4. Aviso si MetaTrader 5 no esta abierto ─────────────────────
-echo IMPORTANTE: el terminal MetaTrader 5 debe estar ABIERTO y con
-echo             sesion iniciada en tu cuenta/broker para poder
-echo             traer datos en vivo. Si no lo esta, el grafico
-echo             va a mostrar datos DEMO en su lugar.
+:: ── 4. Aviso sobre MetaTrader 5 ─────────────────────────────────
+echo IMPORTANTE: MetaTrader 5 debe estar ABIERTO y con sesion iniciada.
+echo Si no lo está, se mostraran datos DEMO.
 echo.
 
 :: ── 5. Abrir navegador y arrancar servidor ───────────────────────
-echo Abriendo grafico en el navegador...
-start "" "http://localhost:5051"
+
+:: Abrir también el archivo index.html local
+if exist "%~dp0index.html" (
+    start "" "%~dp0index.html"
+) else (
+    echo ADVERTENCIA: No se encontró index.html en %~dp0
+)
 
 echo Servidor corriendo en http://localhost:5051
 echo Deja esta ventana abierta mientras usas el grafico.
 echo Cierra esta ventana para detener el servidor.
 echo.
 
-python servidor.py
+"%~dp0\venv\Scripts\python.exe" servidor.py
 
-:: ── Si servidor.py se cerro solo (crash), la ventana NO se cierra ──
-:: para que puedas leer el error de arriba antes de cerrarla vos mismo.
+:: ── Si servidor.py se cerro solo (crash) ─────────────────────────
 echo.
 echo ============================================
 echo   El servidor se detuvo o fallo al arrancar.
