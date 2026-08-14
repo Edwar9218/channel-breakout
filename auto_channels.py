@@ -701,6 +701,90 @@ def select_best_channel(up_ch: Optional[Channel], down_ch: Optional[Channel]) ->
     return up_ch if up_ch.quality >= down_ch.quality else down_ch
 
 
+def _pivot_len_candidates(rng) -> list:
+    """
+    rng = (mínimo, máximo, paso). Devuelve la lista de pivot_len a probar
+    en la búsqueda automática, saneando valores fuera de rango (mínimo >= 1,
+    paso >= 1) para que un config.py mal escrito no rompa el script.
+    """
+    lo, hi, step = rng
+    lo = max(1, int(lo))
+    hi = max(lo, int(hi))
+    step = max(1, int(step))
+    return list(range(lo, hi + 1, step))
+
+
+def search_best_pivot_len(df: pd.DataFrame, candidates, incremental: bool,
+                           base_kwargs: dict, lookback: Optional[int] = None,
+                           both_directions: bool = True):
+    """
+    Elige automáticamente el mejor pivot_len para UN horizonte (largo,
+    mediano o corto), probando cada valor de `candidates` con el mismo
+    pipeline que ya existía (simulate_incremental o run_auto_channels) y
+    quedándose con el que da mejor calidad de canal — el mismo containment
+    ratio ("Q=xx%") que ya se ve en el gráfico. Así ya no hace falta afinar
+    PIVOT_LEN/_MED/_SHORT a mano en config.py: cada canal elige el suyo solo.
+
+    Puntaje de cada candidato:
+      - both_directions=True  (SHOW_BOTH_DIRECTIONS, se dibujan los dos):
+        promedio de la calidad ascendente y descendente (si ambas existen),
+        para no premiar un pivot_len que deja un lado muy bueno y el otro
+        sin canal. Si solo aparece un lado, se usa ese.
+      - both_directions=False (modo 'Auto', se queda solo el mejor de los
+        dos): se usa el MÁXIMO de los dos, porque es el único que termina
+        mostrándose (ver select_best_channel).
+      - Si no aparece ningún canal para ese pivot_len, puntaje = 0.
+
+    Desempate: la calidad tiende a formar "mesetas" — varios pivot_len
+    seguidos que dan exactamente (o casi) el mismo puntaje máximo, típicamente
+    un grupo chico (pivot_len bajo, canal muy local) y uno más grande
+    (pivot_len alto, canal más estructural) que igualan el mismo containment
+    ratio. Ante un empate en el puntaje, esta función se queda con el
+    pivot_len MÁS GRANDE del grupo empatado (candidates se recorre de menor
+    a mayor y se sigue actualizando mientras el puntaje sea >= al mejor
+    encontrado hasta ahora). Esto no sacrifica nada de calidad — sigue siendo
+    exactamente el máximo encontrado — pero evita que el canal LARGO termine
+    eligiendo un pivot_len tan chico como el del canal CORTO solo porque
+    ambos llegan al mismo % de containment; se prioriza el canal más ancho/
+    estructural entre los que empatan en calidad.
+
+    df, incremental, base_kwargs, lookback: mismos parámetros que ya se le
+    pasaban a mano a simulate_incremental/run_auto_channels (base_kwargs NO
+    debe incluir pivot_len, que es justo lo que se está barriendo).
+
+    Devuelve (mejor_pivot_len, mejor_puntaje, scores) — `scores` es un dict
+    {pivot_len: puntaje} con TODOS los candidatos probados (por si se quiere
+    loguear o graficar la curva de calidad vs. pivot_len).
+    Si `candidates` está vacío, devuelve (None, 0.0, {}).
+    """
+    best_len, best_score = None, -1.0
+    scores = {}
+    for p in candidates:
+        if incremental:
+            up_c, dn_c, _, _ = simulate_incremental(
+                df, pivot_len=p, progress=False, lookback=lookback, **base_kwargs)
+        else:
+            up_c, dn_c, _, _ = run_auto_channels(df, pivot_len=p, **base_kwargs)
+
+        quals = [c.quality for c in (up_c, dn_c) if c is not None]
+        if not quals:
+            score = 0.0
+        elif both_directions:
+            score = sum(quals) / len(quals)
+        else:
+            score = max(quals)
+        scores[p] = score
+
+        # >= (no >): entre empates se queda con el candidato más reciente del
+        # recorrido, que al ir de menor a mayor pivot_len es el más grande.
+        if score >= best_score:
+            best_score, best_len = score, p
+
+    if best_len is None:
+        return None, 0.0, scores
+    return best_len, best_score, scores
+
+
 def detect_breakouts(df, up_channel, down_channel, atr_s, last_bar):
     """
     Replica la lógica de breakout/react, pero evaluada SOLO en el bar más
@@ -1115,6 +1199,20 @@ if __name__ == "__main__":
                               "usando esa temporalidad). Si no se indica, usa el CSV_NAME de config.py "
                               "tal cual (el TIMEFRAME que tengas configurado ahí).")
     parser.add_argument("--pivot-len", type=int, default=cfg("PIVOT_LEN", 21))
+    parser.add_argument("--auto-pivot", action=argparse.BooleanOptionalAction,
+                         default=cfg("PIVOT_LEN_AUTO", False),
+                         help="Prueba varios pivot_len para cada canal activo (largo/mediano/corto) "
+                              "y se queda con el que da mejor calidad (containment ratio), en vez "
+                              "de usar el pivot_len fijo de --pivot-len/--medium-pivot-len/"
+                              "--short-pivot-len. Usa --no-auto-pivot para el modo manual de siempre.")
+    _plr = cfg("PIVOT_LEN_RANGE", (10, 40, 2))
+    parser.add_argument("--pivot-len-min", type=int, default=_plr[0],
+                         help="[--auto-pivot] pivot_len mínimo a probar para el canal largo.")
+    parser.add_argument("--pivot-len-max", type=int, default=_plr[1],
+                         help="[--auto-pivot] pivot_len máximo a probar para el canal largo.")
+    parser.add_argument("--pivot-len-step", type=int, default=_plr[2],
+                         help="[--auto-pivot] paso entre valores de pivot_len probados (más chico = "
+                              "búsqueda más fina pero más lenta).")
     parser.add_argument("--atr-len", type=int, default=cfg("ATR_LEN", 14))
     parser.add_argument("--min-bars", type=int, default=cfg("MIN_BARS", 10))
     parser.add_argument("--max-bars", type=int, default=cfg("MAX_BARS", 400))
@@ -1165,6 +1263,13 @@ if __name__ == "__main__":
                          help="Agrega un canal intermedio (ascendente y descendente) con un "
                               "pivot_len entre el largo y el corto, para ver la tendencia de plazo medio.")
     parser.add_argument("--medium-pivot-len", type=int, default=cfg("PIVOT_LEN_MED", 30))
+    _plrm = cfg("PIVOT_LEN_MED_RANGE", (6, 30, 2))
+    parser.add_argument("--medium-pivot-len-min", type=int, default=_plrm[0],
+                         help="[--auto-pivot] pivot_len mínimo a probar para el canal mediano.")
+    parser.add_argument("--medium-pivot-len-max", type=int, default=_plrm[1],
+                         help="[--auto-pivot] pivot_len máximo a probar para el canal mediano.")
+    parser.add_argument("--medium-pivot-len-step", type=int, default=_plrm[2],
+                         help="[--auto-pivot] paso entre valores de pivot_len probados.")
     parser.add_argument("--medium-atr-len", type=int, default=cfg("ATR_LEN_MED", 10))
     parser.add_argument("--medium-min-bars", type=int, default=cfg("MIN_BARS_MED", 8))
     parser.add_argument("--medium-max-bars", type=int, default=cfg("MAX_BARS_MED", 250))
@@ -1181,6 +1286,13 @@ if __name__ == "__main__":
                          help="Agrega un canal corto (ascendente y descendente) calculado con "
                               "un pivot_len más pequeño, para estructura más reciente/corta.")
     parser.add_argument("--short-pivot-len", type=int, default=cfg("PIVOT_LEN_SHORT", 15))
+    _plrs = cfg("PIVOT_LEN_SHORT_RANGE", (3, 15, 1))
+    parser.add_argument("--short-pivot-len-min", type=int, default=_plrs[0],
+                         help="[--auto-pivot] pivot_len mínimo a probar para el canal corto.")
+    parser.add_argument("--short-pivot-len-max", type=int, default=_plrs[1],
+                         help="[--auto-pivot] pivot_len máximo a probar para el canal corto.")
+    parser.add_argument("--short-pivot-len-step", type=int, default=_plrs[2],
+                         help="[--auto-pivot] paso entre valores de pivot_len probados.")
     parser.add_argument("--short-atr-len", type=int, default=cfg("ATR_LEN_SHORT", 10))
     parser.add_argument("--short-min-bars", type=int, default=cfg("MIN_BARS_SHORT", 5))
     parser.add_argument("--short-max-bars", type=int, default=cfg("MAX_BARS_SHORT", 150))
@@ -1290,6 +1402,21 @@ if __name__ == "__main__":
             print(f"ERROR: no hay velas antes de {args.until}")
             sys.exit(1)
 
+    if args.auto_pivot:
+        _cands = _pivot_len_candidates((args.pivot_len_min, args.pivot_len_max, args.pivot_len_step))
+        _base_kw = dict(atr_len=args.atr_len, min_channel_bars=args.min_bars,
+                         max_channel_bars=args.max_bars, quality_th=args.quality,
+                         recent_n=args.recent_n, lookback_pairs=args.lookback_pairs)
+        if args.incremental:
+            _base_kw["replace_ratio"] = args.replace_ratio
+        _best_len, _best_score, _ = search_best_pivot_len(
+            data, _cands, args.incremental, _base_kw,
+            lookback=(args.lookback or None), both_directions=args.show_both_directions)
+        if _best_len is not None:
+            print(f"Auto-pivot (canal largo): pivot_len={_best_len} elegido entre "
+                  f"{_cands[0]}-{_cands[-1]} (paso {args.pivot_len_step}) — calidad={_best_score:.0%}")
+            args.pivot_len = _best_len
+
     if args.incremental:
         up_ch, down_ch, sig, pivots = simulate_incremental(
             data,
@@ -1371,6 +1498,23 @@ if __name__ == "__main__":
 
     # ── Canal mediano (modo 'Auto': un solo canal, el de mejor calidad) ──
     if args.show_medium_channel:
+        if args.auto_pivot:
+            _cands_m = _pivot_len_candidates(
+                (args.medium_pivot_len_min, args.medium_pivot_len_max, args.medium_pivot_len_step))
+            _base_kw_m = dict(atr_len=args.medium_atr_len, min_channel_bars=args.medium_min_bars,
+                               max_channel_bars=args.medium_max_bars, quality_th=args.medium_quality,
+                               recent_n=args.medium_recent_n, lookback_pairs=args.medium_lookback_pairs)
+            if args.incremental:
+                _base_kw_m["replace_ratio"] = args.medium_replace_ratio
+            _best_len_m, _best_score_m, _ = search_best_pivot_len(
+                data, _cands_m, args.incremental, _base_kw_m,
+                lookback=(args.medium_lookback or None), both_directions=args.show_both_directions)
+            if _best_len_m is not None:
+                print(f"Auto-pivot (canal mediano): pivot_len={_best_len_m} elegido entre "
+                      f"{_cands_m[0]}-{_cands_m[-1]} (paso {args.medium_pivot_len_step}) — "
+                      f"calidad={_best_score_m:.0%}")
+                args.medium_pivot_len = _best_len_m
+
         if args.incremental:
             up_ch_m, dn_ch_m, _, _ = simulate_incremental(
                 data,
@@ -1418,6 +1562,23 @@ if __name__ == "__main__":
 
     # ── Canal corto (modo 'Auto': un solo canal, el de mejor calidad) ──
     if args.show_short_channel:
+        if args.auto_pivot:
+            _cands_s = _pivot_len_candidates(
+                (args.short_pivot_len_min, args.short_pivot_len_max, args.short_pivot_len_step))
+            _base_kw_s = dict(atr_len=args.short_atr_len, min_channel_bars=args.short_min_bars,
+                               max_channel_bars=args.short_max_bars, quality_th=args.short_quality,
+                               recent_n=args.short_recent_n, lookback_pairs=args.short_lookback_pairs)
+            if args.incremental:
+                _base_kw_s["replace_ratio"] = args.short_replace_ratio
+            _best_len_s, _best_score_s, _ = search_best_pivot_len(
+                data, _cands_s, args.incremental, _base_kw_s,
+                lookback=(args.short_lookback or None), both_directions=args.show_both_directions)
+            if _best_len_s is not None:
+                print(f"Auto-pivot (canal corto): pivot_len={_best_len_s} elegido entre "
+                      f"{_cands_s[0]}-{_cands_s[-1]} (paso {args.short_pivot_len_step}) — "
+                      f"calidad={_best_score_s:.0%}")
+                args.short_pivot_len = _best_len_s
+
         if args.incremental:
             up_ch_s, dn_ch_s, _, _ = simulate_incremental(
                 data,

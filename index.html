@@ -421,6 +421,10 @@
       <label class="lbl-mediano"><input type="checkbox" class="chk-mediano" checked> Mediano</label>
       <label class="lbl-corto"><input type="checkbox" class="chk-corto" checked> Corto</label>
       <label><input type="checkbox" class="chk-relleno"> Relleno</label>
+      <label><input type="checkbox" class="chk-kalman" checked> Kalman</label>
+      <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
+        <input type="checkbox" class="chk-auto-pivot"> Pivot auto
+      </label>
     </div>
 
     <div class="channel-legend"></div>
@@ -477,6 +481,8 @@ function crearPanel(rootEl, opciones = {}) {
   const chkMediano       = $(".chk-mediano");
   const chkCorto         = $(".chk-corto");
   const chkRelleno       = $(".chk-relleno");
+  const chkAutoPivot     = $(".chk-auto-pivot");
+  const chkKalman        = $(".chk-kalman");
   const chartContainer   = $(".chart-container");
   const emptyScreen      = $(".empty-screen");
   const overlayCanvas    = $(".overlay-canvas");
@@ -497,6 +503,9 @@ function crearPanel(rootEl, opciones = {}) {
   let overlaySeries = [];      // líneas del Kalman
   let channelSeriesList = [];  // líneas de canal (base/par/mid)
   let currentChannels = [];
+  let currentKalman = null;
+  let currentPivots = [];
+  let mostrarKalman = true;
   let lastRealTime = null;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
@@ -605,6 +614,44 @@ function crearPanel(rootEl, opciones = {}) {
 
     actualizarLeyenda();
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
+  }
+
+  // Dibuja las líneas del Kalman Flow + los marcadores (flips Long/Short +
+  // pivotes) — separado de dibujarCanales() para poder togglear el Kalman
+  // con el checkbox sin volver a pedirle nada al servidor (currentKalman/
+  // currentPivots ya están guardados desde la última carga).
+  function dibujarKalmanYMarkers() {
+    overlaySeries.forEach(s => chart.removeSeries(s));
+    overlaySeries = [];
+
+    const markers = [];
+
+    if (currentKalman && mostrarKalman) {
+      currentKalman.segments.forEach(seg => {
+        const s = chart.addLineSeries({
+          color: seg.color, lineWidth: 2, priceLineVisible:false, lastValueVisible:false, title:"",
+        });
+        s.setData(seg.points);
+        overlaySeries.push(s);
+      });
+      currentKalman.flips_up.forEach(p => markers.push({
+        time: p.time, position: "belowBar", color: "#30FDCF", shape: "arrowUp", text: "Long",
+      }));
+      currentKalman.flips_down.forEach(p => markers.push({
+        time: p.time, position: "aboveBar", color: "#E117B7", shape: "arrowDown", text: "Short",
+      }));
+    }
+
+    currentPivots.forEach(p => markers.push({
+      time: p.time,
+      position: p.type === "high" ? "aboveBar" : "belowBar",
+      color: p.type === "high" ? "#FF5252" : "#00E676",
+      shape: p.type === "high" ? "arrowDown" : "arrowUp",
+      text: "",
+    }));
+
+    markers.sort((a, b) => a.time - b.time);
+    candleSerie.setMarkers(markers);
   }
 
   function redrawOverlay() {
@@ -739,39 +786,14 @@ function crearPanel(rootEl, opciones = {}) {
 
     infoSymbol.textContent = data.symbol;
     infoFecha.textContent =
-      `· ${data.timeframe} · ${data.first_date} → ${data.last_date} · ${data.n_candles_total} velas (${data.source})`;
+      `· ${data.timeframe} · ${data.first_date} → ${data.last_date} · ${data.n_candles_total} velas (${data.source})` +
+      (data.auto_pivot ? " · pivot auto" : "");
 
     dibujarCanales();
 
-    const markers = [];
-    if (data.kalman) {
-      data.kalman.segments.forEach(seg => {
-        const s = chart.addLineSeries({
-          color: seg.color, lineWidth: 2, priceLineVisible:false, lastValueVisible:false, title:"",
-        });
-        s.setData(seg.points);
-        overlaySeries.push(s);
-      });
-      data.kalman.flips_up.forEach(p => markers.push({
-        time: p.time, position: "belowBar", color: "#30FDCF", shape: "arrowUp", text: "Long",
-      }));
-      data.kalman.flips_down.forEach(p => markers.push({
-        time: p.time, position: "aboveBar", color: "#E117B7", shape: "arrowDown", text: "Short",
-      }));
-    }
-
-    if (data.pivots && data.pivots.length) {
-      data.pivots.forEach(p => markers.push({
-        time: p.time,
-        position: p.type === "high" ? "aboveBar" : "belowBar",
-        color: p.type === "high" ? "#FF5252" : "#00E676",
-        shape: p.type === "high" ? "arrowDown" : "arrowUp",
-        text: "",
-      }));
-    }
-
-    markers.sort((a, b) => a.time - b.time);
-    candleSerie.setMarkers(markers);
+    currentKalman = data.kalman || null;
+    currentPivots = data.pivots || [];
+    dibujarKalmanYMarkers();
 
     chart.timeScale().fitContent();
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -799,6 +821,9 @@ function crearPanel(rootEl, opciones = {}) {
 
     const params = new URLSearchParams({ symbol, timeframe });
     if (hasta) params.set("hasta", hasta);
+    // Checkbox "Pivot auto": manda explícito true/false, así el checkbox
+    // manda por sobre lo que diga config.py (elección clara desde el HTML).
+    params.set("auto_pivot", chkAutoPivot.checked ? "true" : "false");
 
     try {
       const res = await fetch(`${API}/datos?${params.toString()}`, {
@@ -976,6 +1001,7 @@ function crearPanel(rootEl, opciones = {}) {
     chkMediano.addEventListener("change", e => { filtroCanales.mediano = e.target.checked; dibujarCanales(); });
     chkCorto.addEventListener("change", e => { filtroCanales.corto = e.target.checked; dibujarCanales(); });
     chkRelleno.addEventListener("change", e => { mostrarRelleno = e.target.checked; redrawOverlay(); });
+    chkKalman.addEventListener("change", e => { mostrarKalman = e.target.checked; dibujarKalmanYMarkers(); });
 
     // Colapsar/expandir la info (señal/kalman/canales + fecha/estado del
     // panel) para liberar espacio vertical del gráfico. Los checkboxes y

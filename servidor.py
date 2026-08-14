@@ -496,7 +496,7 @@ SHORT_DEFAULTS = dict(pivot_len=6, atr_len=8, min_bars=4, max_bars=80, quality=0
                        range=(3, 15, 1), label="Canal corto")
 
 
-def compute_analysis(symbol=None, timeframe_override=None, hasta=None):
+def compute_analysis(symbol=None, timeframe_override=None, hasta=None, auto_pivot_override=None):
     symbol = (symbol or cfg("SYMBOL", "EURUSD")).strip().upper()
     timeframe = (timeframe_override or cfg("TIMEFRAME", "H4")).upper()
 
@@ -515,7 +515,11 @@ def compute_analysis(symbol=None, timeframe_override=None, hasta=None):
 
     incremental = bool(cfg("INCREMENTAL", True))
     show_both = bool(cfg("SHOW_BOTH_DIRECTIONS", True))
-    auto_pivot = bool(cfg("PIVOT_LEN_AUTO", False))
+    # auto_pivot_override viene del checkbox "Pivot automático" del HTML
+    # (True/False explícito). Si no se manda nada (None), se usa el default
+    # de config.py como hasta ahora — así el checkbox no rompe nada para
+    # quien no lo toque.
+    auto_pivot = bool(cfg("PIVOT_LEN_AUTO", False)) if auto_pivot_override is None else bool(auto_pivot_override)
 
     up_ch, dn_ch, sig, pivots = _long_channel(data, incremental, auto_pivot, show_both)
 
@@ -642,6 +646,7 @@ def compute_analysis(symbol=None, timeframe_override=None, hasta=None):
         "smf": smf_json,
         "signals": dict(sig),
         "n_candles_total": len(data),
+        "auto_pivot": auto_pivot,
         "last_date": data["datetime"].iloc[-1].strftime("%Y-%m-%d %H:%M"),
         "first_date": data["datetime"].iloc[0].strftime("%Y-%m-%d %H:%M"),
     }
@@ -678,8 +683,18 @@ def datos():
     timeframe = request.args.get("timeframe", "").strip() or None
     hasta = request.args.get("hasta", "").strip() or None  # formato YYYY-MM-DD (input type=date)
 
+    # Checkbox "Pivot automático" del HTML: "1"/"true" -> True, "0"/"false" -> False,
+    # sin mandar el parámetro -> None (usa el default de config.py, como siempre).
+    auto_pivot_param = request.args.get("auto_pivot", "").strip().lower()
+    auto_pivot_override = None
+    if auto_pivot_param in ("1", "true", "si", "sí"):
+        auto_pivot_override = True
+    elif auto_pivot_param in ("0", "false", "no"):
+        auto_pivot_override = False
+
     try:
-        result = compute_analysis(symbol=symbol, timeframe_override=timeframe, hasta=hasta)
+        result = compute_analysis(symbol=symbol, timeframe_override=timeframe, hasta=hasta,
+                                   auto_pivot_override=auto_pivot_override)
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
