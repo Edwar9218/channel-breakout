@@ -678,26 +678,6 @@ function crearPanel(rootEl, opciones = {}) {
           overlayCtx.fillStyle = hexToRgba(ch.color, 0.12);
           overlayCtx.fill();
         }
-
-        [ch.pivot1, ch.pivot2].forEach(p => {
-          if (!p) return;
-          const px = chart.timeScale().timeToCoordinate(p.t);
-          const py = candleSerie.priceToCoordinate(p.y);
-          if (px === null || py === null) return;
-
-          overlayCtx.beginPath();
-          overlayCtx.arc(px, py, 6, 0, Math.PI * 2);
-          overlayCtx.fillStyle = "rgba(255,255,255,0.95)";
-          overlayCtx.fill();
-
-          overlayCtx.beginPath();
-          overlayCtx.arc(px, py, 4.5, 0, Math.PI * 2);
-          overlayCtx.fillStyle = ch.color;
-          overlayCtx.fill();
-          overlayCtx.lineWidth = 1.5;
-          overlayCtx.strokeStyle = "#131722";
-          overlayCtx.stroke();
-        });
       });
 
     if (lastRealTime !== null) {
@@ -1004,12 +984,14 @@ function crearPanel(rootEl, opciones = {}) {
     chkKalman.addEventListener("change", e => { mostrarKalman = e.target.checked; dibujarKalmanYMarkers(); });
 
     // Colapsar/expandir la info (señal/kalman/canales + fecha/estado del
-    // panel) para liberar espacio vertical del gráfico. Los checkboxes y
-    // la leyenda de colores NO se ocultan — quedan siempre visibles.
+    // panel + leyenda de colores de canales) para liberar espacio vertical
+    // del gráfico. Los checkboxes de Largo/Mediano/Corto/Relleno/Kalman/
+    // Pivot auto NO se ocultan — quedan siempre visibles.
     // Arranca COLAPSADA por defecto (más espacio para el gráfico de entrada).
     let infoColapsada = true;
     infoBar.style.display = "none";
     sigTextGroup.style.display = "none";
+    channelLegend.style.display = "none";
     btnToggleInfo.textContent = "▾";
     btnToggleInfo.title = "Mostrar información";
 
@@ -1017,6 +999,7 @@ function crearPanel(rootEl, opciones = {}) {
       infoColapsada = !infoColapsada;
       infoBar.style.display = infoColapsada ? "none" : "flex";
       sigTextGroup.style.display = infoColapsada ? "none" : "flex";
+      channelLegend.style.display = infoColapsada ? "none" : "flex";
       btnToggleInfo.textContent = infoColapsada ? "▾" : "☰";
       btnToggleInfo.title = infoColapsada ? "Mostrar información" : "Ocultar información";
     });
@@ -1030,7 +1013,10 @@ function crearPanel(rootEl, opciones = {}) {
     actualizarBtnClear();
   }
 
-  return { init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol };
+  return {
+    init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol,
+    getChart: () => chart, getCandleSerie: () => candleSerie,
+  };
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1076,6 +1062,8 @@ function toggleSplit() {
       if (simboloPanel1) {
         panel2.setSymbol(simboloPanel1);
       }
+
+      sincronizarCrosshairs(panel1, panel2);
     }
   } else {
     panel2El.style.display = "none";
@@ -1083,6 +1071,46 @@ function toggleSplit() {
   }
   // El ResizeObserver de cada panel se encarga de re-sincronizar el
   // tamaño del chart automáticamente al cambiar el layout.
+}
+
+// ── Sincroniza el crosshair entre las 2 pantallas: al mover el mouse en
+// una, la otra salta a la misma marca de tiempo. La bandera
+// "moviendoDesdeOtroPanel" evita que la actualización programática de un
+// gráfico dispare a su vez el evento del otro (bucle infinito).
+function sincronizarCrosshairs(panelA, panelB) {
+  const chartA = panelA.getChart(), chartB = panelB.getChart();
+  const serieA = panelA.getCandleSerie(), serieB = panelB.getCandleSerie();
+  let moviendoDesdeOtroPanel = false;
+
+  function precioEnCrosshair(param, serie) {
+    const d = param.seriesData.get(serie);
+    if (!d) return undefined;
+    return d.value !== undefined ? d.value : d.close;   // line series usa "value", velas usan "close"
+  }
+
+  chartA.subscribeCrosshairMove(param => {
+    if (moviendoDesdeOtroPanel) return;
+    moviendoDesdeOtroPanel = true;
+    if (!param.time) {
+      chartB.clearCrosshairPosition();
+    } else {
+      const precio = precioEnCrosshair(param, serieA);
+      if (precio !== undefined) chartB.setCrosshairPosition(precio, param.time, serieB);
+    }
+    moviendoDesdeOtroPanel = false;
+  });
+
+  chartB.subscribeCrosshairMove(param => {
+    if (moviendoDesdeOtroPanel) return;
+    moviendoDesdeOtroPanel = true;
+    if (!param.time) {
+      chartA.clearCrosshairPosition();
+    } else {
+      const precio = precioEnCrosshair(param, serieB);
+      if (precio !== undefined) chartA.setCrosshairPosition(precio, param.time, serieA);
+    }
+    moviendoDesdeOtroPanel = false;
+  });
 }
 
 // ── Verificar si el servidor corre (compartido, un solo backend) ──
